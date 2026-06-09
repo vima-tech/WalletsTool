@@ -1,6 +1,7 @@
 import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { ethers } from 'ethers';
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
 import QRCode from 'qrcode';
 import { Notification } from '@arco-design/web-vue';
 import { debounce as customDebounce } from '@/utils/debounce.js';
@@ -17,7 +18,8 @@ export function useTip(options = {}) {
   const tipAmount = ref('');
   const tipPrivateKey = ref('');
   const tipLoading = ref(false);
-  const developerAddress = ref('0x298E1bE50Ba5f50CF23cFA6b5F1dF347cFBef40A');
+  // Solana developer address (base58)
+  const developerAddress = ref('7EcDhSYGxXyscszYEp35KHN8vvw3svAuLKTzXwCFLtV');
   const tipAmountOptions = ['0.001', '0.005', '0.01', '0.05', '0.1'];
 
   const tipMode = ref('qrcode');
@@ -94,26 +96,22 @@ export function useTip(options = {}) {
       if (!privateKey || typeof privateKey !== 'string') {
         return false;
       }
-
-      let cleanKey = privateKey.trim();
-
-      if (cleanKey.startsWith('0x') || cleanKey.startsWith('0X')) {
-        cleanKey = cleanKey.slice(2);
-      }
-
-      if (cleanKey.length !== 64) {
+      const cleanKey = privateKey.trim();
+      const secretKey = bs58.decode(cleanKey);
+      if (secretKey.length !== 64) {
         return false;
       }
-
-      if (!/^[0-9a-fA-F]{64}$/.test(cleanKey)) {
-        return false;
-      }
-
-      new ethers.Wallet(privateKey);
+      Keypair.fromSecretKey(secretKey);
       return true;
     } catch (error) {
       return false;
     }
+  }
+
+  function deriveAddress(privateKey) {
+    const secretKey = bs58.decode(privateKey.trim());
+    const keypair = Keypair.fromSecretKey(secretKey);
+    return keypair.publicKey.toBase58();
   }
 
   async function queryTipWalletBalance() {
@@ -142,8 +140,7 @@ export function useTip(options = {}) {
     }
 
     try {
-      const wallet = new ethers.Wallet(tipPrivateKey.value.trim());
-      const address = wallet.address;
+      const address = deriveAddress(tipPrivateKey.value.trim());
 
       tipWalletBalance.value = {
         valid: false,
@@ -163,7 +160,7 @@ export function useTip(options = {}) {
         });
 
         if (typeof result === 'string') {
-          balance = parseFloat(result || 0);
+          balance = parseFloat(result || '0');
         } else if (typeof result === 'number') {
           balance = result;
         }
@@ -197,7 +194,7 @@ export function useTip(options = {}) {
         if (result && result.success && result.items && result.items.length > 0) {
           const item = result.items[0];
           if (item.exec_status === '2') {
-            balance = parseFloat(item.coin_balance || 0);
+            balance = parseFloat(item.coin_balance || '0');
           } else {
             throw new Error(item.error_msg || '代币余额查询失败');
           }
@@ -269,9 +266,6 @@ export function useTip(options = {}) {
     tipLoading.value = true;
 
     try {
-      const wallet = new ethers.Wallet(tipPrivateKey.value.trim());
-      const fromAddress = wallet.address;
-
       const tipData = {
         private_key: tipPrivateKey.value.trim(),
         to_addr: developerAddress.value,
