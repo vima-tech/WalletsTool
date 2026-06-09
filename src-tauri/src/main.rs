@@ -238,7 +238,6 @@ async fn main() {
             database::reload_database,
             database::check_database_schema,
             database::export_database_to_init_sql,
-            database::is_wallet_db_ready,
             database::commands::get_dual_database_status,
             database::commands::init_public_db,
             database::commands::init_secure_db,

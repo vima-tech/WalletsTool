@@ -18,11 +18,12 @@ import VirtualScrollerTable from '@/components/VirtualScrollerTable.vue';
 import ChainIcon from '@/components/ChainIcon.vue';
 
 import { useTransfer } from '../composables/useTransfer';
-import { useBalanceQuery } from '../composables/useBalanceQuery';
-import { useValidation } from '../composables/useValidation';
-import { useDataOperations } from '../composables/useDataOperations';
+import { useBalanceQuery } from '@/features/common/composables/useBalanceQuery';
+import { useValidation } from '@/features/common/composables/useValidation';
+import { useDataOperations } from '@/features/common/composables/useDataOperations';
 import { useTip } from '../composables/useTip';
 import { WINDOW_CONFIG } from '@/utils/windowNames';
+import { ECOSYSTEMS } from '@/features/common/ecosystemConfig';
 
 const TransferGuide = defineAsyncComponent(() => import('@/components/transfer/TransferGuide.vue'));
 
@@ -614,10 +615,11 @@ const isTokenEditMode = ref(false);
 const currentEditToken = ref(null);
 const tokenForm = reactive({ key: '', name: '', symbol: '', decimals: 18, type: 'token', contract_type: '', contract_address: '', abi: '' });
 
-const { validateForm: validateFormFn, checkSendType, checkPrecision, checkGasPrice, checkGasLimit, checkDelay } = useValidation({ form, formRef });
+const { validateForm: validateFormFn, checkSendType, checkPrecision, checkGasPrice, checkGasLimit, checkDelay } = useValidation({ form, formRef, ecosystem: 'evm' });
 
 const { importProgress, importTotal, importCompleted, showImportProgress, importProgressText, validatePrivateKey, validateAddress, updateImportProgress, processBatchData, UploadFile, upload, triggerFileUpload, downloadFile, downloadTemplate: downloadTemplateFn, exportPrivateKeyAddress, clearData: clearDataFn, deleteItem: deleteItemFn } = useDataOperations({
   data, uploadInputRef, clearValidationCache,
+  ...ECOSYSTEMS.evm,
 });
 
 const { showCelebration, showTipModal, tipAmount, tipPrivateKey, tipLoading, developerAddress, tipAmountOptions, tipMode, showQRCode, showPrivateKeyInput, qrCodeDataURL, tipWalletBalance, tipBalanceSufficient, shouldShowTipWalletStatus, generateQRCode, switchTipMode, copyAddressToClipboard, triggerCelebration, skipTip, sendTip, copyDeveloperAddress, queryTipWalletBalance } = useTip({
@@ -932,7 +934,7 @@ const { transferFnc, stopTransfer: stopTransferFn, performIntelligentRetry, iter
 
 const { queryBalance, queryToAddressBalance, stopBalanceQuery, currentQueryId } = useBalanceQuery({
   data, chainValue, currentCoin, threadCount, balanceLoading, balanceStopFlag, balanceStopStatus, balanceTotal, balanceCompleted, balanceProgress, showBalanceProgress, toAddressBalanceTotal, toAddressBalanceCompleted, toAddressBalanceProgress, showToAddressBalanceProgress, updateBalanceProgress, updateToAddressBalanceProgress, windowId: currentWindowId,
-});
+}, ECOSYSTEMS.evm);
 
 const debouncedQueryBalance = customDebounce(queryBalance, 500);
 const debouncedQueryToAddressBalance = customDebounce(queryToAddressBalance, 500);

@@ -1,6 +1,6 @@
 use tauri::State;
 use crate::wallets_tool::wallet_manager::service::WalletManagerService;
-use crate::database::{get_database_pool, migrate_to_encrypted_db, unlock_encrypted_database, is_database_encrypted};
+use crate::database::get_database_pool;
 use super::models::*;
 
 /// 初始化钱包管理器的表结构（使用最新的数据库连接池）
@@ -14,10 +14,12 @@ pub async fn init_wallet_manager_tables() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn is_wallet_manager_initialized() -> Result<bool, String> {
-    if is_database_encrypted().await.unwrap_or(false) {
+    // 首先检查新架构的secure.db是否已初始化
+    if crate::database::is_secure_database_initialized() {
         return Ok(true);
     }
 
+    // 后备：检查app_config表（兼容旧架构）
     let pool = get_database_pool();
     let count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM app_config WHERE key = 'master_verifier'"
@@ -29,16 +31,16 @@ pub async fn is_wallet_manager_initialized() -> Result<bool, String> {
     Ok(count > 0)
 }
 
-/// 初始化加密数据库（迁移未加密数据到加密数据库）
+/// 初始化安全数据库（委托给新架构的secure_db）
 #[tauri::command]
 pub async fn init_encrypted_db(password: String) -> Result<(), String> {
-    migrate_to_encrypted_db(&password).await.map_err(|e| e.to_string())
+    crate::database::secure_init::init_secure_database(&password).await.map_err(|e| e.to_string())
 }
 
-/// 解锁加密数据库
+/// 解锁安全数据库
 #[tauri::command]
 pub async fn unlock_encrypted_db(password: String) -> Result<(), String> {
-    unlock_encrypted_database(&password).await.map_err(|e| e.to_string())
+    crate::database::secure_init::unlock_secure_database(&password).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
