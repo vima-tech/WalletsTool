@@ -200,6 +200,14 @@ html,
 #app {
     padding: 0;
     background: transparent;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+html, body {
+    border-radius: 12px;
+    overflow: hidden;
+    background: transparent;
 }
 
 /* 全局样式 */

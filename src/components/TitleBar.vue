@@ -544,6 +544,7 @@ const switchEcosystem = (targetEco) => {
   left: 0;
   right: 0;
   z-index: 1000;
+  border-radius: 12px 12px 0 0;
 }
 
 .title-bar-left {

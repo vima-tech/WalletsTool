@@ -253,6 +253,7 @@ pub async fn open_function_window<R: Runtime>(
     .resizable(true)
     .center()
     .decorations(false)
+    .transparent(true)
     .visible(false)
     .skip_taskbar(false)
     .build()
