@@ -36,5 +36,6 @@ onMounted(async () => {
   border-radius: 12px;
   overflow: hidden;
   position: relative;
+  transform: translateZ(0);
 }
 </style>
