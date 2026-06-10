@@ -617,7 +617,7 @@ const tokenForm = reactive({ key: '', name: '', symbol: '', decimals: 18, type: 
 
 const { validateForm: validateFormFn, checkSendType, checkPrecision, checkGasPrice, checkGasLimit, checkDelay } = useValidation({ form, formRef, ecosystem: 'evm' });
 
-const { importProgress, importTotal, importCompleted, showImportProgress, importProgressText, validatePrivateKey, validateAddress, updateImportProgress, processBatchData, UploadFile, upload, triggerFileUpload, downloadFile, downloadTemplate: downloadTemplateFn, exportPrivateKeyAddress, clearData: clearDataFn, deleteItem: deleteItemFn } = useDataOperations({
+const { importProgress, importTotal, importCompleted, showImportProgress, importProgressText, updateImportProgress, processBatchData, UploadFile, upload, downloadFile, downloadTemplate: downloadTemplateFn, exportPrivateKeyAddress, clearData: clearDataFn, deleteItem: deleteItemFn } = useDataOperations({
   data, uploadInputRef, clearValidationCache,
   ...ECOSYSTEMS.evm,
 });
