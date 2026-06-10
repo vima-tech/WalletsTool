@@ -314,647 +314,72 @@ export function useTransfer(options = {}) {
     const isFuryMode = threadCount.value > 90;
 
     if (isFuryMode) {
-      console.log('[狂暴模式] 已激活，线程数:', threadCount.value);
       Notification.info({
-        content: '狂暴模式已激活：交易将快速批量提交，然后统一确认结果',
+        content: '狂暴模式已激活：交易将快速批量提交，后端并行确认结果',
         position: 'topLeft',
       });
-
-      await iterTransferFuryMode(accountData);
-      return;
     }
 
-    const isSingleThread = enableMultiThread === '0' || enableMultiThread === false;
+    // key→realIndex lookup for event dispatch
+    const keyToRealIndex = new Map();
+    data.value.forEach((d, idx) => keyToRealIndex.set(d.key, idx));
 
-    if (isSingleThread) {
-      for (let index = 0; index < accountData.length; index++) {
-        if (stopFlag.value) {
-          stopStatus.value = true;
-          return;
-        }
-
-        const item = accountData[index];
-
-        if (item.exec_status !== '0') {
-          continue;
-        }
-
-        await ensureBalance(item);
-
-        if (form.max_gas_price && form.max_gas_price.trim()) {
-          const gasPriceOk = await checkGasPriceForTransfer();
-          if (!gasPriceOk) {
-            pausedTransferData.value = { accountData, index };
-            await startGasPriceMonitoring();
-
-            while (transferPaused.value && !stopFlag.value) {
-              await new Promise((resolve) =>
-                  setTimeout(resolve, 1000),
-              );
-            }
-
-            if (stopFlag.value) {
-              stopStatus.value = true;
-              return;
-            }
-          }
-        }
-
-        const realIndex = data.value.findIndex(
-            (dataItem) => dataItem.key === item.key,
-        );
-        if (realIndex === -1) {
-          console.error('无法找到对应的数据项');
-          continue;
-        }
-
-        const config = {
-          ...transferConfig.value,
-          transfer_amount:
-              form.amount_from === '1'
-                  ? item.amount && item.amount.trim() !== ''
-                      ? Number(item.amount)
-                      : 0
-                  : form.send_count && form.send_count.trim() !== ''
-                      ? Number(form.send_count)
-                      : 0,
+    // Build per-item batch payload (only pending rows)
+    const items = accountData
+      .filter((item) => item.exec_status === '0')
+      .map((item) => {
+        const perItemAmount =
+          form.amount_from === '1'
+            ? item.amount && item.amount.trim() !== '' ? item.amount : null
+            : null;
+        return {
+          key: item.key,
+          private_key: item.private_key,
+          address: (item.address || '').toLowerCase(),
+          to_addr: item.to_addr,
+          amount: perItemAmount,
         };
+      });
 
-        try {
-          if (currentCoin.value.coin_type === 'base') {
-            data.value[realIndex].exec_status = '1';
-            try {
-              const res = await invoke('base_coin_transfer', {
-                index: realIndex + 1,
-                item: item,
-                config: config,
-              });
+    if (items.length === 0) return;
 
-              if (typeof res === 'object' && res !== null) {
-                if (res.success && res.tx_hash) {
-                  data.value[realIndex].exec_status = '2';
-                  data.value[realIndex].error_msg = res.tx_hash;
-                } else {
-                  data.value[realIndex].exec_status = '3';
-                  data.value[realIndex].error_msg =
-                      res.error || '转账失败';
-                }
-              } else {
-                data.value[realIndex].exec_status = '2';
-                data.value[realIndex].error_msg = String(
-                    res || '转账成功',
-                );
-              }
-              updateTransferProgress();
-            } catch (err) {
-              if (err === 'base gas price 超出最大值限制') {
-                Notification.error({
-                  content: 'base gas price 超出最大值限制',
-                  position: 'topLeft',
-                });
-                stopTransfer();
-                data.value[realIndex].exec_status = '0';
-                data.value[realIndex].error_msg = '';
-                return;
-              } else {
-                data.value[realIndex].exec_status = '3';
-                data.value[realIndex].error_msg = err;
-                data.value[realIndex].retry_flag = true;
-                updateTransferProgress();
-              }
-            }
-          } else if (currentCoin.value.coin_type === 'token') {
-            data.value[realIndex].exec_status = '1';
-            try {
-              const res = await invoke('token_transfer', {
-                index: realIndex + 1,
-                item: item,
-                config: {
-                  ...config,
-                  contract_address: currentCoin.value.contract_address,
-                  abi: currentCoin.value.abi,
-                },
-              });
+    const { listen } = await import('@tauri-apps/api/event');
+    const transferId = `eth_transfer_${Date.now()}`;
 
-              if (typeof res === 'object' && res !== null) {
-                if (res.success && res.tx_hash) {
-                  data.value[realIndex].exec_status = '2';
-                  data.value[realIndex].error_msg = res.tx_hash;
-                } else {
-                  data.value[realIndex].exec_status = '3';
-                  data.value[realIndex].error_msg =
-                      res.error || '转账失败';
-                }
-              } else {
-                data.value[realIndex].exec_status = '2';
-                data.value[realIndex].error_msg = String(
-                    res || '转账成功',
-                );
-              }
-              updateTransferProgress();
-            } catch (err) {
-              if (err === 'base gas price 超出最大值限制') {
-                Notification.error({
-                  content: 'base gas price 超出最大值限制',
-                  position: 'topLeft',
-                });
-                stopTransfer();
-                data.value[realIndex].exec_status = '0';
-                data.value[realIndex].error_msg = '';
-                return;
-              } else {
-                data.value[realIndex].exec_status = '3';
-                data.value[realIndex].error_msg = err;
-                data.value[realIndex].retry_flag = true;
-                updateTransferProgress();
-              }
-            }
-          } else {
-            Notification.error({
-              content: '未知币种类型',
-              position: 'topLeft',
-            });
-            return;
-          }
-        } catch (e) {
-          data.value[realIndex].exec_status = '3';
-          data.value[realIndex].error_msg = e.message || '转账异常';
-          data.value[realIndex].retry_flag = true;
-          updateTransferProgress();
-        }
-
-        if (index < accountData.length - 1 && !stopFlag.value) {
-          const minDelay =
-              form.min_interval && form.min_interval.trim() !== ''
-                  ? Number(form.min_interval) * 1000
-                  : 1000;
-          const maxDelay =
-              form.max_interval && form.max_interval.trim() !== ''
-                  ? Number(form.max_interval) * 1000
-                  : 3000;
-          const randomDelay =
-              Math.floor(Math.random() * (maxDelay - minDelay + 1)) +
-              minDelay;
-
-          let nextPendingIndex = -1;
-          for (let i = index + 1; i < accountData.length; i++) {
-            if (accountData[i].exec_status === '0') {
-              nextPendingIndex = data.value.findIndex(
-                  (dataItem) => dataItem.key === accountData[i].key,
-              );
-              break;
-            }
-          }
-
-          if (nextPendingIndex !== -1) {
-            const originalErrorMsg = data.value[nextPendingIndex].error_msg;
-            let remainingTime = Math.ceil(randomDelay / 1000);
-
-            const countdownInterval = setInterval(() => {
-              if (stopFlag.value) {
-                clearInterval(countdownInterval);
-                data.value[nextPendingIndex].error_msg =
-                    originalErrorMsg;
-                return;
-              }
-
-              data.value[nextPendingIndex].error_msg =
-                  `等待中...${remainingTime}秒`;
-              remainingTime--;
-
-              if (remainingTime < 0) {
-                clearInterval(countdownInterval);
-                data.value[nextPendingIndex].error_msg =
-                    originalErrorMsg;
-              }
-            }, 1000);
-
-            await new Promise((resolve) => {
-              setTimeout(() => {
-                clearInterval(countdownInterval);
-                resolve();
-              }, randomDelay);
-            });
-          } else {
-            await new Promise((resolve) =>
-                setTimeout(resolve, randomDelay),
-            );
-          }
-        }
-      }
-      return;
-    }
-
-    const keyToIndexMap = new Map();
-    data.value.forEach((dataItem, index) => {
-      keyToIndexMap.set(dataItem.key, index);
+    const unlisten = await listen('transfer_item_update', (event) => {
+      const { key, exec_status, error_msg, transfer_id } = event.payload;
+      if (transfer_id !== transferId) return;
+      const realIdx = keyToRealIndex.get(key);
+      if (realIdx === undefined) return;
+      data.value[realIdx].exec_status = exec_status;
+      data.value[realIdx].error_msg = error_msg ?? '';
+      if (exec_status === '3') data.value[realIdx].retry_flag = true;
+      if (exec_status === '2') data.value[realIdx].retry_flag = false;
+      updateTransferProgress();
     });
 
-    const walletGroups = new Map();
-    accountData.forEach((item) => {
-      const walletAddress = item.address || item.private_key;
-      if (!walletGroups.has(walletAddress)) {
-        walletGroups.set(walletAddress, []);
-      }
-      const realIndex = keyToIndexMap.get(item.key) ?? -1;
-      walletGroups
-          .get(walletAddress)
-          .push({ ...item, originalIndex: 0, realIndex });
-    });
-
-    const walletGroupsArray = Array.from(walletGroups.values());
-
-    const processWalletGroup = async (walletTransactions) => {
-      for (const item of walletTransactions) {
-        if (stopFlag.value) {
-          stopStatus.value = true;
-          return;
-        }
-
-        if (item.exec_status !== '0') {
-          continue;
-        }
-
-        await ensureBalance(item);
-
-        const realIndex = item.realIndex;
-        if (realIndex === -1) {
-          console.error('无法找到对应的数据项');
-          continue;
-        }
-
-        const config = {
-          ...transferConfig.value,
-          transfer_amount:
-              form.amount_from === '1'
-                  ? item.amount && item.amount.trim() !== ''
-                      ? Number(item.amount)
-                      : 0
-                  : form.send_count && form.send_count.trim() !== ''
-                      ? Number(form.send_count)
-                      : 0,
-        };
-
-        try {
-          if (currentCoin.value.coin_type === 'base') {
-            data.value[realIndex].exec_status = '1';
-            try {
-              const res = await invoke('base_coin_transfer', {
-                index: realIndex + 1,
-                item: item,
-                config: config,
-              });
-
-              if (typeof res === 'object' && res !== null) {
-                if (res.success && res.tx_hash) {
-                  data.value[realIndex].exec_status = '2';
-                  data.value[realIndex].error_msg = res.tx_hash;
-                } else {
-                  data.value[realIndex].exec_status = '3';
-                  data.value[realIndex].error_msg =
-                      res.error || '转账失败';
-                }
-              } else {
-                data.value[realIndex].exec_status = '2';
-                data.value[realIndex].error_msg = String(
-                    res || '转账成功',
-                );
-              }
-              updateTransferProgress();
-            } catch (err) {
-              if (err === 'base gas price 超出最大值限制') {
-                Notification.error({
-                  content: 'base gas price 超出最大值限制',
-                  position: 'topLeft',
-                });
-                stopTransfer();
-                data.value[realIndex].exec_status = '0';
-                data.value[realIndex].error_msg = '';
-                return;
-              } else {
-                data.value[realIndex].exec_status = '3';
-                data.value[realIndex].error_msg = err;
-                data.value[realIndex].retry_flag = true;
-                updateTransferProgress();
-              }
-            }
-          } else if (currentCoin.value.coin_type === 'token') {
-            data.value[realIndex].exec_status = '1';
-            try {
-              const res = await invoke('token_transfer', {
-                index: realIndex + 1,
-                item: item,
-                config: {
-                  ...config,
-                  contract_address: currentCoin.value.contract_address,
-                  abi: currentCoin.value.abi,
-                },
-              });
-
-              if (typeof res === 'object' && res !== null) {
-                if (res.success && res.tx_hash) {
-                  data.value[realIndex].exec_status = '2';
-                  data.value[realIndex].error_msg = res.tx_hash;
-                } else {
-                  data.value[realIndex].exec_status = '3';
-                  data.value[realIndex].error_msg =
-                      res.error || '转账失败';
-                }
-              } else {
-                data.value[realIndex].exec_status = '2';
-                data.value[realIndex].error_msg = String(
-                    res || '转账成功',
-                );
-              }
-              updateTransferProgress();
-            } catch (err) {
-              if (err === 'base gas price 超出最大值限制') {
-                Notification.error({
-                  content: 'base gas price 超出最大值限制',
-                  position: 'topLeft',
-                });
-                stopTransfer();
-                data.value[realIndex].exec_status = '0';
-                data.value[realIndex].error_msg = '';
-                return;
-              } else {
-                data.value[realIndex].exec_status = '3';
-                data.value[realIndex].error_msg = err;
-                data.value[realIndex].retry_flag = true;
-                updateTransferProgress();
-              }
-            }
-          } else {
-            Notification.error({
-              content: '未知币种类型',
-              position: 'topLeft',
-            });
-            return;
-          }
-        } catch (e) {
-          data.value[realIndex].exec_status = '3';
-          data.value[realIndex].error_msg = e.message || '转账异常';
-          data.value[realIndex].retry_flag = true;
-          updateTransferProgress();
-        }
-      }
+    const isToken = currentCoin.value.coin_type === 'token';
+    const config = {
+      ...transferConfig.value,
+      transfer_amount:
+        form.send_count && form.send_count.trim() !== ''
+          ? Number(form.send_count)
+          : transferConfig.value?.transfer_amount ?? 0,
+      ...(isToken ? { contract_address: currentCoin.value.contract_address } : {}),
     };
 
-    const workQueue = [...walletGroupsArray];
-    const runningTasks = new Set();
-    const maxConcurrency = Math.min(
-        threadCount.value,
-        walletGroupsArray.length,
-    );
-
-    const startWorkerTask = async () => {
-      while (workQueue.length > 0 && !stopFlag.value) {
-        const walletGroup = workQueue.shift();
-        if (!walletGroup) break;
-
-        const taskPromise = processWalletGroup(walletGroup);
-        runningTasks.add(taskPromise);
-
-        taskPromise.finally(() => {
-          runningTasks.delete(taskPromise);
-        });
-
-        await taskPromise;
-      }
-    };
-
-    const workers = [];
-    for (let i = 0; i < maxConcurrency; i++) {
-      workers.push(startWorkerTask());
-    }
-
-    await Promise.all(workers);
-  }
-
-  async function iterTransferFuryMode(accountData) {
-    console.log('[狂暴模式] 开始执行，待处理数据数量:', accountData.length);
-
-    const keyToIndexMap = new Map();
-    data.value.forEach((dataItem, index) => {
-      keyToIndexMap.set(dataItem.key, index);
-    });
-
-    const pendingTransactions = [];
-    const submissionFinished = { value: false }; // 使用对象引用传递状态
-
-    const walletGroups = new Map();
-    accountData.forEach((item) => {
-      const walletAddress = item.address || item.private_key;
-      if (!walletGroups.has(walletAddress)) {
-        walletGroups.set(walletAddress, []);
-      }
-      const realIndex = keyToIndexMap.get(item.key) ?? -1;
-      walletGroups.get(walletAddress).push({ ...item, realIndex });
-    });
-
-    const walletGroupsArray = Array.from(walletGroups.values());
-    const maxConcurrency = Math.min(
-        threadCount.value,
-        walletGroupsArray.length,
-    );
-
-    console.log('[狂暴模式] 钱包分组数:', walletGroupsArray.length, '并发数:', maxConcurrency);
-
-    const submitWalletGroupTransactions = async (walletTransactions) => {
-      for (const item of walletTransactions) {
-        if (stopFlag.value) return;
-
-        if (item.exec_status !== '0') continue;
-
-        await ensureBalance(item);
-
-        const realIndex = item.realIndex;
-        if (realIndex === -1) {
-          console.error('[狂暴模式] 无法找到对应的数据项');
-          continue;
-        }
-
-        const config = {
-          ...transferConfig.value,
-          transfer_amount:
-              form.amount_from === '1'
-                  ? item.amount && item.amount.trim() !== ''
-                      ? Number(item.amount)
-                      : 0
-                  : form.send_count && form.send_count.trim() !== ''
-                      ? Number(form.send_count)
-                      : 0,
-        };
-
-        try {
-          data.value[realIndex].exec_status = '1';
-          data.value[realIndex].error_msg = '正在提交交易...';
-
-          let res;
-          if (currentCoin.value.coin_type === 'base') {
-            res = await invoke('base_coin_transfer_fast', {
-              index: realIndex + 1,
-              item: item,
-              config: config,
-            });
-          } else if (currentCoin.value.coin_type === 'token') {
-            res = await invoke('token_transfer_fast', {
-              index: realIndex + 1,
-              item: item,
-              config: {
-                ...config,
-                contract_address: currentCoin.value.contract_address,
-                abi: currentCoin.value.abi,
-              },
-            });
-          } else {
-            throw new Error('未知币种类型');
-          }
-
-          if (res && res.success && res.tx_hash) {
-            data.value[realIndex].error_msg =
-                `已提交，等待确认: ${res.tx_hash.substring(0, 15)}...`;
-            
-            // 将交易加入待确认列表
-            pendingTransactions.push({
-              key: item.key,
-              realIndex,
-              txHash: res.tx_hash,
-              item,
-              config,
-              retryCount: 0,
-              startTime: Date.now(),
-            });
-          } else {
-            data.value[realIndex].exec_status = '3';
-            data.value[realIndex].error_msg = res?.error || '提交失败';
-            data.value[realIndex].retry_flag = true;
-            updateTransferProgress();
-          }
-        } catch (err) {
-          console.error(`[狂暴模式] 提交失败: ${realIndex + 1}`, err);
-          data.value[realIndex].exec_status = '3';
-          data.value[realIndex].error_msg = String(err);
-          data.value[realIndex].retry_flag = true;
-          updateTransferProgress();
-        }
-      }
-    };
-
-    const workQueue = [...walletGroupsArray];
-    const workers = [];
-
-    const startSubmitWorker = async () => {
-      while (workQueue.length > 0 && !stopFlag.value) {
-        const walletGroup = workQueue.shift();
-        if (!walletGroup) break;
-        await submitWalletGroupTransactions(walletGroup);
-      }
-    };
-
-    // 启动确认线程
-    const confirmationWorker = async () => {
-      const BATCH_SIZE = 50; // 批量查询大小
-      const CHECK_INTERVAL = 1000; // 检查间隔 (ms)
-      const MAX_CONFIRM_TIME = 60000; // 最大确认时间 60s (超时则标记失败)
-
-      while (!stopFlag.value) {
-        if (pendingTransactions.length === 0) {
-          if (submissionFinished.value) {
-            break; // 提交完成且无待确认交易，退出
-          }
-          await new Promise((r) => setTimeout(r, 500));
-          continue;
-        }
-
-        // 处理超时交易
-        const now = Date.now();
-        for (let i = pendingTransactions.length - 1; i >= 0; i--) {
-            if (now - pendingTransactions[i].startTime > MAX_CONFIRM_TIME) {
-                const tx = pendingTransactions[i];
-                data.value[tx.realIndex].exec_status = '3';
-                data.value[tx.realIndex].error_msg = '确认超时';
-                data.value[tx.realIndex].retry_flag = true;
-                updateTransferProgress();
-                pendingTransactions.splice(i, 1);
-            }
-        }
-        
-        if (pendingTransactions.length === 0) continue;
-
-        // 批量查询
-        // 我们只查询前 BATCH_SIZE 个，或者所有 pending 的 (如果支持大批量)
-        // 这里为了避免并发冲突，我们取出一批进行查询，查询期间它们仍在数组中，但我们只处理这批
-        // 为了防止重复频繁查询同一个，我们可以简单地轮询
-        
-        const batch = pendingTransactions.slice(0, BATCH_SIZE);
-        if (batch.length === 0) {
-             await new Promise((r) => setTimeout(r, 500));
-             continue;
-        }
-
-        const txHashes = batch.map(t => t.txHash);
-        
-        try {
-            const results = await invoke('check_transactions_status_batch', {
-                chain: chainValue.value,
-                tx_hashes: txHashes
-            });
-            
-            // 处理结果
-            const confirmedIndices = []; // 在 batch 中的索引
-            
-            results.forEach((res) => {
-                const txInfo = batch.find(t => t.txHash === res.hash);
-                if (!txInfo) return;
-                
-                if (res.status.confirmed) {
-                    if (res.status.success === true) {
-                        data.value[txInfo.realIndex].exec_status = '2';
-                        data.value[txInfo.realIndex].error_msg = txInfo.txHash;
-                        data.value[txInfo.realIndex].retry_flag = false;
-                    } else {
-                         data.value[txInfo.realIndex].exec_status = '3';
-                         data.value[txInfo.realIndex].error_msg = res.status.error || '交易执行失败';
-                         data.value[txInfo.realIndex].retry_flag = true;
-                    }
-                    updateTransferProgress();
-                    
-                    // 标记为已完成，需要从 pendingTransactions 中移除
-                    // 我们记录 txHash 来移除
-                    const idx = pendingTransactions.findIndex(t => t.txHash === res.hash);
-                    if (idx !== -1) {
-                        pendingTransactions.splice(idx, 1);
-                    }
-                } else {
-                     // 仍在确认中
-                     // 可以更新 UI 显示确认中...
-                     data.value[txInfo.realIndex].error_msg = `确认中... ${txInfo.txHash.substring(0, 10)}`;
-                }
-            });
-            
-        } catch (e) {
-            console.error('[狂暴模式] 批量查询失败:', e);
-        }
-
-        await new Promise((r) => setTimeout(r, CHECK_INTERVAL));
-      }
-    };
-
-    const confirmWorkerPromise = confirmationWorker();
-
-    for (let i = 0; i < maxConcurrency; i++) {
-      workers.push(startSubmitWorker());
-    }
-
-    await Promise.all(workers);
-    submissionFinished.value = true;
-    
-    // 等待确认线程完成
-    await confirmWorkerPromise;
-
-    if (stopFlag.value) {
-      console.log('[狂暴模式] 用户停止，中断执行');
+    try {
+      await invoke(isToken ? 'batch_token_transfer' : 'batch_base_coin_transfer', {
+        params: {
+          items,
+          config,
+          thread_count: threadCount.value,
+          fury_mode: isFuryMode,
+          transfer_id: transferId,
+        },
+      });
+    } finally {
+      unlisten();
     }
   }
 
@@ -976,7 +401,6 @@ export function useTransfer(options = {}) {
     stopTransfer,
     performIntelligentRetry,
     iterTransfer,
-    iterTransferFuryMode,
     retryInProgress,
     retryResults,
   };

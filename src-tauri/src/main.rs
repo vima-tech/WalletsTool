@@ -256,6 +256,8 @@ async fn main() {
             wallets_tool::transfer::check_wallet_recent_transfers,
             wallets_tool::transfer::stop_transfer,
             wallets_tool::transfer::reset_transfer_stop,
+            wallets_tool::transfer::batch_base_coin_transfer,
+            wallets_tool::token_transfer::batch_token_transfer,
             // ─── Solana Transfer ───
             wallets_tool::ecosystems::solana::transfer::sol_transfer,
             wallets_tool::ecosystems::solana::transfer::sol_token_transfer,
@@ -264,6 +266,8 @@ async fn main() {
             wallets_tool::ecosystems::solana::transfer::sol_check_recent_transfers,
             wallets_tool::ecosystems::solana::transfer::sol_check_transactions_status_batch,
             wallets_tool::ecosystems::solana::transfer::sol_query_balances_with_updates,
+            wallets_tool::ecosystems::solana::transfer::batch_sol_transfer,
+            wallets_tool::ecosystems::solana::transfer::batch_sol_token_transfer,
             wallets_tool::ecosystems::solana::provider::test_solana_rpc_connection,
             // ─── Token Transfer ───
             wallets_tool::token_transfer::token_transfer,

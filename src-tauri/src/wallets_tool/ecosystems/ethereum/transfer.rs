@@ -11,6 +11,8 @@ use alloy_signer::Signer;
 use url::Url;
 use std::sync::Arc;
 use rand::Rng;
+use tokio::sync::Semaphore;
+use futures::future::join_all;
 use crate::database::get_database_pool;
 use crate::wallets_tool::ecosystems::ethereum::provider::{ProviderUtils, create_provider_with_client, create_http_client_with_proxy, AlloyProvider};
 use crate::wallets_tool::security::SecureMemory;
@@ -44,7 +46,7 @@ fn set_stop_flag(window_id: &str, value: bool) {
 }
 
 // 辅助函数：重置窗口的停止状态
-fn reset_stop_flag(window_id: &str) {
+pub(crate) fn reset_stop_flag(window_id: &str) {
     set_stop_flag(window_id, false);
 }
 
@@ -1848,7 +1850,7 @@ pub async fn check_transaction_status(
 }
 
 // 内部检查交易状态实现
-async fn check_transaction_status_internal(
+pub(crate) async fn check_transaction_status_internal(
     chain: String,
     tx_hash: String,
 ) -> Result<TransactionStatusResult, Box<dyn std::error::Error>> {
@@ -2087,5 +2089,249 @@ async fn check_wallet_recent_transfers_internal(
         has_recent_transfer,
         transaction_count,
         latest_transaction_hash,
+    })
+}
+
+// ─── Batch Transfer ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BatchTransferItemFront {
+    pub key: String,
+    pub private_key: SecureMemory,
+    pub address: String,
+    pub to_addr: String,
+    pub amount: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchTransferParams {
+    pub items: Vec<BatchTransferItemFront>,
+    pub config: TransferConfig,
+    pub thread_count: usize,
+    pub fury_mode: bool,
+    pub transfer_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchTransferSummary {
+    pub total: usize,
+    pub success: usize,
+    pub failed: usize,
+    pub stopped: bool,
+}
+
+#[tauri::command]
+pub async fn batch_base_coin_transfer<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    params: BatchTransferParams,
+) -> Result<BatchTransferSummary, String> {
+    run_batch_transfer(app_handle, params).await
+}
+
+async fn run_batch_transfer<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    params: BatchTransferParams,
+) -> Result<BatchTransferSummary, String> {
+    let window_id = params.config.window_id.clone().unwrap_or_default();
+    reset_stop_flag(&window_id);
+
+    let fury_mode = params.fury_mode || params.thread_count > 90;
+    let thread_count = params.thread_count.clamp(1, 200);
+    let total_items = params.items.len();
+
+    // 按钱包地址分组，保证同一钱包的 nonce 顺序正确
+    let mut wallet_groups: Vec<Vec<BatchTransferItemFront>> = Vec::new();
+    {
+        let mut addr_to_group: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for item in params.items {
+            let addr = item.address.to_lowercase();
+            let idx = *addr_to_group.entry(addr).or_insert_with(|| {
+                wallet_groups.push(Vec::new());
+                wallet_groups.len() - 1
+            });
+            wallet_groups[idx].push(item);
+        }
+    }
+
+    let semaphore = Arc::new(Semaphore::new(thread_count));
+    let config = Arc::new(params.config);
+    let transfer_id = Arc::new(params.transfer_id);
+
+    use std::sync::atomic::{AtomicUsize, Ordering as AO};
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let failed_count = Arc::new(AtomicUsize::new(0));
+
+    let tasks: Vec<_> = wallet_groups.into_iter().map(|group| {
+        let sem = semaphore.clone();
+        let cfg = config.clone();
+        let tid = transfer_id.clone();
+        let ah = app_handle.clone();
+        let wid = window_id.clone();
+        let sc = success_count.clone();
+        let fc = failed_count.clone();
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let group_len = group.len();
+
+            for (i, front_item) in group.into_iter().enumerate() {
+                if get_stop_flag(&wid) { break; }
+
+                // Per-item config: override transfer_amount when item provides own amount
+                let mut item_cfg = (*cfg).clone();
+                if let Some(ref amt) = front_item.amount {
+                    if !amt.is_empty() {
+                        if let Ok(v) = amt.parse::<f64>() {
+                            item_cfg.transfer_amount = v;
+                        }
+                    }
+                }
+
+                let transfer_item = TransferItem {
+                    private_key: front_item.private_key.clone(),
+                    to_addr: front_item.to_addr.clone(),
+                    error_msg: String::new(),
+                    retry_flag: false,
+                };
+
+                // Notify frontend: started
+                let _ = ah.emit("transfer_item_update", serde_json::json!({
+                    "key": front_item.key,
+                    "exec_status": "1",
+                    "tx_hash": null,
+                    "error_msg": if fury_mode { "正在提交..." } else { "执行中..." },
+                    "window_id": wid,
+                    "transfer_id": *tid,
+                }));
+
+                if fury_mode {
+                    // Fast submit, then poll for confirmation
+                    let fast_result: Result<String, String> = base_coin_transfer_fast_internal(ah.clone(), 0, transfer_item, item_cfg.clone()).await.map_err(|e| e.to_string());
+                    match fast_result {
+                        Ok(tx_hash) => {
+                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                "key": front_item.key,
+                                "exec_status": "4",
+                                "tx_hash": tx_hash,
+                                "error_msg": "已提交，等待上链确认...",
+                                "window_id": wid,
+                                "transfer_id": *tid,
+                            }));
+
+                            let chain = item_cfg.chain.clone();
+                            let start = std::time::Instant::now();
+                            let max_wait = std::time::Duration::from_secs(90);
+                            let poll_interval = std::time::Duration::from_secs(2);
+                            let tx_hash_copy = tx_hash.clone();
+
+                            loop {
+                                if start.elapsed() > max_wait {
+                                    let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                        "key": front_item.key,
+                                        "exec_status": "3",
+                                        "tx_hash": tx_hash_copy,
+                                        "error_msg": "上链确认超时",
+                                        "window_id": wid,
+                                        "transfer_id": *tid,
+                                    }));
+                                    fc.fetch_add(1, AO::Relaxed);
+                                    break;
+                                }
+                                if get_stop_flag(&wid) {
+                                    fc.fetch_add(1, AO::Relaxed);
+                                    break;
+                                }
+                                match check_transaction_status_internal(chain.clone(), tx_hash_copy.clone()).await.map_err(|e| e.to_string()) {
+                                    Ok(s) if s.confirmed => {
+                                        if s.success == Some(true) {
+                                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                                "key": front_item.key,
+                                                "exec_status": "2",
+                                                "tx_hash": tx_hash_copy,
+                                                "error_msg": tx_hash_copy,
+                                                "window_id": wid,
+                                                "transfer_id": *tid,
+                                            }));
+                                            sc.fetch_add(1, AO::Relaxed);
+                                        } else {
+                                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                                "key": front_item.key,
+                                                "exec_status": "3",
+                                                "tx_hash": tx_hash_copy,
+                                                "error_msg": "链上执行失败",
+                                                "window_id": wid,
+                                                "transfer_id": *tid,
+                                            }));
+                                            fc.fetch_add(1, AO::Relaxed);
+                                        }
+                                        break;
+                                    }
+                                    _ => { sleep(poll_interval).await; }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                "key": front_item.key,
+                                "exec_status": "3",
+                                "tx_hash": null,
+                                "error_msg": e.to_string(),
+                                "window_id": wid,
+                                "transfer_id": *tid,
+                            }));
+                            fc.fetch_add(1, AO::Relaxed);
+                        }
+                    }
+                } else {
+                    // Normal mode: wait for on-chain confirmation
+                    match base_coin_transfer_internal(ah.clone(), 0, transfer_item, item_cfg.clone()).await {
+                        Ok(tx_hash) => {
+                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                "key": front_item.key,
+                                "exec_status": "2",
+                                "tx_hash": tx_hash,
+                                "error_msg": tx_hash,
+                                "window_id": wid,
+                                "transfer_id": *tid,
+                            }));
+                            sc.fetch_add(1, AO::Relaxed);
+                        }
+                        Err(e) => {
+                            let _ = ah.emit("transfer_item_update", serde_json::json!({
+                                "key": front_item.key,
+                                "exec_status": "3",
+                                "tx_hash": null,
+                                "error_msg": e.to_string(),
+                                "window_id": wid,
+                                "transfer_id": *tid,
+                            }));
+                            fc.fetch_add(1, AO::Relaxed);
+                        }
+                    }
+
+                    // 同一钱包的相邻转账之间加延迟（最后一笔不等待）
+                    if i < group_len - 1 {
+                        let [min_s, max_s] = item_cfg.delay;
+                        if min_s > 0 || max_s > 0 {
+                            let secs = if max_s > min_s {
+                                rand::thread_rng().gen_range(min_s..=max_s)
+                            } else {
+                                min_s
+                            };
+                            if secs > 0 { sleep(Duration::from_secs(secs)).await; }
+                        }
+                    }
+                }
+            }
+        })
+    }).collect();
+
+    join_all(tasks).await;
+
+    Ok(BatchTransferSummary {
+        total: total_items,
+        success: success_count.load(std::sync::atomic::Ordering::Relaxed),
+        failed: failed_count.load(std::sync::atomic::Ordering::Relaxed),
+        stopped: get_stop_flag(&window_id),
     })
 }
