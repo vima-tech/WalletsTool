@@ -22,7 +22,19 @@ onMounted(async () => {
 </script>
 
 <template>
-  <Suspense>
-    <router-view></router-view>
-  </Suspense>
+  <div class="window-root">
+    <Suspense>
+      <router-view></router-view>
+    </Suspense>
+  </div>
 </template>
+
+<style>
+.window-root {
+  width: 100%;
+  height: 100vh;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+</style>
