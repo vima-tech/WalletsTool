@@ -1,18 +1,25 @@
 <script setup name="app">
 import { onMounted } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useDatabaseStore } from '@/stores/database'
 
 const databaseStore = useDatabaseStore()
 
 const initDatabase = async () => {
+  const isTauri = typeof window !== 'undefined' && window.__TAURI_INTERNALS__
+  if (!isTauri) return
+
+  // 子窗口跳过数据库初始化（主窗口已完成）
+  try {
+    const win = getCurrentWindow()
+    if (win.label !== 'main') return
+  } catch (_) {}
+
   await databaseStore.checkStatus()
 
   if (!databaseStore.publicReady) {
     await databaseStore.initPublicDatabase()
   }
-
-  // 启动时不再自动提示设置安全数据库密码
-  // 仅在访问钱包管理页面时才按需提示
 }
 
 onMounted(async () => {

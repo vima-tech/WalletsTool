@@ -309,6 +309,7 @@ onMounted(async () => {
       const currentWindow = getCurrentWindow();
       const title = await currentWindow.title();
       if (title) windowTitle.value = title;
+      currentWindow.emit('page-loaded');
     } catch {}
   }
 })

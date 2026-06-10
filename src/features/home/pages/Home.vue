@@ -403,12 +403,15 @@ function createNewWindow(pageName) {
     }
     const windowLabel = WINDOW_CONFIG.generateLabel(pageName, newCount)
 
-    // 修改：指向 entry 页面，而不是具体的 eth/sol 页面
+    // 直接路由到目标页面，跳过 EcosystemEntry，利用 localStorage 中保存的生态系统选择
+    const eco = ecoStore.currentEco || 'eth'
     const windowUrl = pageName === 'airdrop-browser'
       ? `/#/airdrop/browser?count=${newCount}`
       : pageName === 'wallet-manager'
         ? `/#/wallet-manager?count=${newCount}`
-        : `/#/entry?target=${pageName}&count=${newCount}`
+        : pageName === 'monitor'
+          ? `/#/eth/monitor?count=${newCount}`
+          : `/#/${eco}/${pageName}?count=${newCount}`
 
     // 生成窗口标题：统一格式 "WalletsTool - {图标} {功能名} [{序号}]"
     const moduleIcons = { transfer: '💸', balance: '💰', monitor: '👁️', 'airdrop-browser': '🤖', 'wallet-manager': '🔐' }
@@ -443,7 +446,7 @@ function createNewWindow(pageName) {
     })
 
     windowListObj.value[pageName].set(windowLabel, webview)
-    fallbackShowTimer = setTimeout(showWindowOnce, 3000)
+    fallbackShowTimer = setTimeout(showWindowOnce, 1500)
 
     webview.once('tauri://close-requested', function (event) {
       // 在 Tauri 2.x 中，需要手动关闭窗口
