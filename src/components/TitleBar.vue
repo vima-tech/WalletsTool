@@ -1,6 +1,6 @@
 <template>
   <!-- 自定义标题栏 -->
-  <div class="title-bar">
+  <div class="title-bar" @mousedown="handleDragStart">
     <div class="title-bar-left">
       <img src="/app-icon.png" alt="Logo" class="title-bar-logo" />
       
@@ -365,6 +365,17 @@ function handleKeydown(event) {
   } else if (event.key === 'Escape') {
     event.preventDefault()
     cancelEdit()
+  }
+}
+
+async function handleDragStart(event) {
+  if (event.button !== 0) return;
+  if (event.target.closest('.title-bar-controls, button, input, .ecosystem-badge.clickable, .theme-toggle-container')) return;
+  const isTauri = typeof window !== 'undefined' && window.__TAURI_INTERNALS__;
+  if (isTauri) {
+    try {
+      await getCurrentWindow().startDragging();
+    } catch (e) {}
   }
 }
 
