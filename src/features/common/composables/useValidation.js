@@ -42,7 +42,7 @@ export function useValidation(options = {}) {
       const maxValid = /^\d+(\.\d+)?$/.test(form.send_max_count) && Number(form.send_max_count) > 0
       if (!minValid || !maxValid) {
         const msg = form.send_type === '4' ? '剩余数量必须为数字且大于0' : '发送数量必须为数字且大于0'
-        Notification.error(msg)
+        Notification.error({ content: msg, position: 'topLeft' })
         setFieldError('send_count_scope', '数量范围错误')
         return false
       }
@@ -50,7 +50,7 @@ export function useValidation(options = {}) {
         const msg = form.send_type === '4'
           ? '最大剩余数量应该大于等于最小剩余数量'
           : '最大发送数量应该大于等于最小发送数量'
-        Notification.error(msg)
+        Notification.error({ content: msg, position: 'topLeft' })
         setFieldError('send_count_scope', '数量范围错误')
         return false
       }

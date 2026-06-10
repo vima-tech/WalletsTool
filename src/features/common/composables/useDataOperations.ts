@@ -170,7 +170,6 @@ export function useDataOperations(options = {}) {
   }
 
   function upload() { uploadInputRef.value.click(); }
-  function triggerFileUpload() { upload(); }
 
   const downloadFile = customDebounce(() => {
     downloadWithDialog('import_model.xlsx', '导入模板.xlsx');
@@ -229,7 +228,7 @@ export function useDataOperations(options = {}) {
 
   return {
     importProgress, importTotal, importCompleted, showImportProgress, importProgressText,
-    updateImportProgress, processBatchData, UploadFile, upload, triggerFileUpload,
+    updateImportProgress, processBatchData, UploadFile, upload,
     downloadFile, downloadTemplate, exportPrivateKeyAddress, clearData, deleteItem,
   };
 }
